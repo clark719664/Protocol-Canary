@@ -153,7 +153,7 @@ fn unknown_verification_keys_and_tables_are_rejected_with_filename() {
             reason,
         } => {
             assert_eq!(source_path, Path::new("fixtures/bad_verification.toml"));
-            assert!(reason.contains("unknown key"), "{reason}");
+            assert!(reason.contains("unknown field"), "{reason}");
         }
         other => panic!("expected InvalidVerification variant, got: {other:?}"),
     }

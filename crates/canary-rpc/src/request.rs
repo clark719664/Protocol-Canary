@@ -307,7 +307,7 @@ fn string_array(value: &toml::Value, max: usize, what: &str) -> Result<Value, St
 }
 
 /// Standard-alphabet base64 with `=` padding, length a multiple of four.
-fn is_base64(text: &str) -> bool {
+pub(crate) fn is_base64(text: &str) -> bool {
     if text.is_empty() || !text.len().is_multiple_of(4) {
         return false;
     }

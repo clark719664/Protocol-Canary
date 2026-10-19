@@ -1,5 +1,6 @@
 //! Typed request/response shapes for the small subset of Stellar RPC this
-//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, and `simulateTransaction`.
+//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`,
+//! `getLedgerEntries`, and `simulateTransaction`.
 //!
 //! These mirror the documented Stellar RPC JSON-RPC methods; XDR-bearing
 //! fields stay as base64 strings here; the Soroban runner decodes them
@@ -7,6 +8,47 @@
 //! that.
 
 use serde::{Deserialize, Serialize};
+
+/// The parameters of `getLedgerEntries`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLedgerEntriesRequest {
+    /// Base64-encoded `LedgerKey` XDR strings.
+    pub keys: Vec<String>,
+}
+
+/// One ledger entry returned by `getLedgerEntries`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerEntryResult {
+    /// Base64-encoded `LedgerKey` XDR string.
+    pub key: String,
+    /// Base64-encoded `LedgerEntryData` XDR string.
+    pub xdr: String,
+    /// Ledger sequence when the entry was last modified.
+    #[serde(alias = "last_modified_ledger_seq")]
+    pub last_modified_ledger_seq: u32,
+    /// Optional ledger sequence until which the entry is live.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "live_until_ledger_seq"
+    )]
+    pub live_until_ledger_seq: Option<u32>,
+}
+
+/// The result of `getLedgerEntries`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLedgerEntriesResponse {
+    #[serde(default)]
+    pub entries: Vec<LedgerEntryResult>,
+    pub latest_ledger: u32,
+}
 
 /// The result of `getHealth`.
 ///

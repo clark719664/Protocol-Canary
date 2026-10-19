@@ -19,7 +19,8 @@ use serde_json::json;
 use canary_core::CanaryError;
 
 use crate::models::{
-    GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest, SimulationResponse,
+    GetHealthResponse, GetLedgerEntriesRequest, GetLedgerEntriesResponse, LatestLedger,
+    NetworkInfo, SimulationRequest, SimulationResponse,
 };
 
 /// Errors returned by the Stellar RPC client.
@@ -169,6 +170,12 @@ pub enum RpcError {
     /// how many attempts were made before giving up.
     #[error("RPC endpoint rate-limited {method} after {attempts} attempt(s)")]
     RateLimited { method: String, attempts: u32 },
+
+    /// Client-side request parameter validation failed before dispatching to
+    /// the endpoint (for example, an invalid base64 ledger key or an empty
+    /// keys slice).
+    #[error("invalid arguments for {method}: {reason}")]
+    InvalidRequest { method: String, reason: String },
 }
 
 impl From<RpcError> for CanaryError {
@@ -232,6 +239,11 @@ pub trait RpcClient {
         &self,
     ) -> impl std::future::Future<Output = Result<GetHealthResponse, RpcError>> + Send;
 
+    fn get_ledger_entries(
+        &self,
+        keys: &[String],
+    ) -> impl std::future::Future<Output = Result<GetLedgerEntriesResponse, RpcError>> + Send;
+
     /// `getNetwork`'s JSON `result` object exactly as the endpoint returned
     /// it, including every field [`NetworkInfo`] does not model.
     ///
@@ -253,6 +265,13 @@ pub trait RpcClient {
     /// returned it. See [`RpcClient::get_network_raw`].
     fn get_health_raw(
         &self,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
+
+    /// `getLedgerEntries`'s JSON `result` object exactly as the endpoint
+    /// returned it. See [`RpcClient::get_network_raw`].
+    fn get_ledger_entries_raw(
+        &self,
+        params: serde_json::Value,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
 
     fn simulate_transaction(
@@ -822,6 +841,40 @@ impl RpcClient for HttpRpcClient {
         self.call("getHealth", json!({})).await
     }
 
+    async fn get_ledger_entries(
+        &self,
+        keys: &[String],
+    ) -> Result<GetLedgerEntriesResponse, RpcError> {
+        if keys.is_empty() {
+            return Err(RpcError::InvalidRequest {
+                method: "getLedgerEntries".to_string(),
+                reason: "keys must not be empty".to_string(),
+            });
+        }
+        if keys.len() > crate::request::MAX_KEYS {
+            return Err(RpcError::InvalidRequest {
+                method: "getLedgerEntries".to_string(),
+                reason: format!(
+                    "keys has {} entries; the engine allows at most {}",
+                    keys.len(),
+                    crate::request::MAX_KEYS
+                ),
+            });
+        }
+        for (index, key) in keys.iter().enumerate() {
+            if !crate::request::is_base64(key) {
+                return Err(RpcError::InvalidRequest {
+                    method: "getLedgerEntries".to_string(),
+                    reason: format!("key at index {index} ({key:?}) is not a valid base64 string"),
+                });
+            }
+        }
+        let req = GetLedgerEntriesRequest {
+            keys: keys.to_vec(),
+        };
+        self.call("getLedgerEntries", req).await
+    }
+
     async fn get_network_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getNetwork", json!({})).await
     }
@@ -832,6 +885,13 @@ impl RpcClient for HttpRpcClient {
 
     async fn get_health_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getHealth", json!({})).await
+    }
+
+    async fn get_ledger_entries_raw(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        self.call_object("getLedgerEntries", params).await
     }
 
     async fn simulate_transaction(

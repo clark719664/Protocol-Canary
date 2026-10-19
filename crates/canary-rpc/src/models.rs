@@ -105,6 +105,16 @@ pub struct Transaction {
     pub status: String,
 }
 
+/// One host-function execution result entry inside `simulateTransaction.results`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimulationHostFunctionResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xdr: Option<String>,
+    #[serde(default)]
+    pub auth: Vec<String>,
+}
+
 /// The result of `simulateTransaction`.
 ///
 /// Only the fields this project's fixtures currently assert on are
@@ -121,6 +131,8 @@ pub struct SimulationResponse {
     pub transaction_data: Option<String>,
     #[serde(default)]
     pub min_resource_fee: Option<String>,
+    #[serde(default)]
+    pub results: Vec<SimulationHostFunctionResult>,
 }
 
 impl SimulationResponse {

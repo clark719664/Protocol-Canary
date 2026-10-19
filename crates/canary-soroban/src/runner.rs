@@ -13,7 +13,7 @@ use canary_rpc::RpcClient;
 use crate::builder::{
     build_invoke_transaction_envelope, BuilderError, InvocationSpec, ScValInput, MAX_ARG_DEPTH,
 };
-use crate::simulation::simulate;
+use crate::simulation::{parse_simulation_auth_entries, simulate};
 
 /// Errors raised while turning a [`LoadedFixture`] into a [`SorobanFixture`].
 ///
@@ -55,6 +55,25 @@ impl From<BuilderError> for CanaryError {
     }
 }
 
+/// Optional authorization-structure assertions evaluated when simulation succeeds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimulationAuthExpectation {
+    /// Expected number of decoded `SorobanAuthorizationEntry` items across `results[..].auth`.
+    pub auth_count: Option<usize>,
+    /// Expected credentials kind (`"source_account"` or `"address"`) for each auth entry in order.
+    pub auth_credentials: Option<Vec<String>>,
+    /// Expected root authorized function name for each auth entry in order.
+    pub auth_functions: Option<Vec<String>>,
+}
+
+impl SimulationAuthExpectation {
+    pub fn is_empty(&self) -> bool {
+        self.auth_count.is_none()
+            && self.auth_credentials.is_none()
+            && self.auth_functions.is_none()
+    }
+}
+
 /// What a [`SorobanFixture`] expects the simulation to do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SorobanAssertion {
@@ -71,6 +90,7 @@ pub struct SorobanFixture {
     pub metadata: FixtureMetadata,
     pub invocation: InvocationSpec,
     pub assertion: SorobanAssertion,
+    pub auth_expectation: Option<SimulationAuthExpectation>,
 }
 
 impl SorobanFixture {
@@ -148,19 +168,96 @@ impl SorobanFixture {
             .get("expect")
             .and_then(toml::Value::as_table)
             .ok_or_else(|| invalid("missing required table \"expect\"".to_string()))?;
-        if let Some(message) =
-            canary_fixtures::unknown_body_keys(expect, &["kind", "message_contains"])
-        {
+        if let Some(message) = canary_fixtures::unknown_body_keys(
+            expect,
+            &[
+                "kind",
+                "message_contains",
+                "auth_count",
+                "auth_credentials",
+                "auth_functions",
+            ],
+        ) {
             return Err(invalid(format!("[expect]: {message}")));
         }
-        let assertion = match expect.get("kind").and_then(toml::Value::as_str) {
-            Some("simulation-success") => SorobanAssertion::SimulationSuccess,
-            Some("simulation-error") => SorobanAssertion::SimulationError {
-                message_contains: expect
-                    .get("message_contains")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-            },
+
+        let auth_count = match expect.get("auth_count") {
+            None => None,
+            Some(v) => {
+                let count = v
+                    .as_integer()
+                    .and_then(|i| usize::try_from(i).ok())
+                    .ok_or_else(|| {
+                        invalid("[expect].auth_count must be a non-negative integer".to_string())
+                    })?;
+                Some(count)
+            }
+        };
+
+        let parse_string_list = |field: &str| -> Result<Option<Vec<String>>, SorobanFixtureError> {
+            let Some(raw) = expect.get(field) else {
+                return Ok(None);
+            };
+            let arr = raw
+                .as_array()
+                .ok_or_else(|| invalid(format!("[expect].{field} must be an array of strings")))?;
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                let s = item.as_str().ok_or_else(|| {
+                    invalid(format!("[expect].{field} must be an array of strings"))
+                })?;
+                out.push(s.to_string());
+            }
+            Ok(Some(out))
+        };
+
+        let auth_credentials = parse_string_list("auth_credentials")?;
+        if let Some(ref creds) = auth_credentials {
+            for cred in creds {
+                if !matches!(
+                    cred.as_str(),
+                    "source_account" | "address" | "address_v2" | "address_with_delegates"
+                ) {
+                    return Err(invalid(format!(
+                        "unsupported [expect].auth_credentials entry {cred:?}: expected \"source_account\", \"address\", \"address_v2\", or \"address_with_delegates\""
+                    )));
+                }
+            }
+        }
+        let auth_functions = parse_string_list("auth_functions")?;
+
+        let auth_exp = SimulationAuthExpectation {
+            auth_count,
+            auth_credentials,
+            auth_functions,
+        };
+
+        let (assertion, auth_expectation) = match expect.get("kind").and_then(toml::Value::as_str) {
+            Some("simulation-success") => (
+                SorobanAssertion::SimulationSuccess,
+                if auth_exp.is_empty() {
+                    None
+                } else {
+                    Some(auth_exp)
+                },
+            ),
+            Some("simulation-error") => {
+                if !auth_exp.is_empty() {
+                    return Err(invalid(
+                        "[expect] auth assertions are only supported with kind = \"simulation-success\""
+                            .to_string(),
+                    ));
+                }
+                (
+                    SorobanAssertion::SimulationError {
+                        message_contains: expect
+                            .get("message_contains")
+                            .and_then(toml::Value::as_str)
+                            .map(str::to_string),
+                    },
+                    None,
+                )
+            }
             Some(other) => {
                 return Err(invalid(format!(
                     "unsupported expectation kind {other:?}: expected \"simulation-success\" or \"simulation-error\""
@@ -179,6 +276,7 @@ impl SorobanFixture {
                 sequence_number,
             },
             assertion,
+            auth_expectation,
         })
     }
 }
@@ -464,19 +562,70 @@ fn evaluate(
 ) -> (Status, String, Option<String>) {
     match &fixture.assertion {
         SorobanAssertion::SimulationSuccess => {
-            if response.succeeded() {
-                (
-                    Status::Pass,
-                    "simulation succeeded as expected".to_string(),
-                    None,
-                )
-            } else {
-                (
+            if !response.succeeded() {
+                return (
                     Status::Fail,
                     "expected simulation to succeed, but it failed".to_string(),
                     response.error.clone(),
-                )
+                );
             }
+            if let Some(ref auth_exp) = fixture.auth_expectation {
+                let entries = match parse_simulation_auth_entries(response) {
+                    Ok(entries) => entries,
+                    Err(err) => {
+                        return (
+                            Status::Fail,
+                            "simulation succeeded, but auth entry XDR could not be decoded"
+                                .to_string(),
+                            Some(err),
+                        );
+                    }
+                };
+                if let Some(expected_count) = auth_exp.auth_count {
+                    if entries.len() != expected_count {
+                        return (
+                            Status::Fail,
+                            "simulation succeeded, but auth entry count did not match".to_string(),
+                            Some(format!(
+                                "expected {expected_count} auth entries, got {}",
+                                entries.len()
+                            )),
+                        );
+                    }
+                }
+                if let Some(ref expected_creds) = auth_exp.auth_credentials {
+                    let actual_creds: Vec<String> =
+                        entries.iter().map(|e| e.credentials_kind.clone()).collect();
+                    if &actual_creds != expected_creds {
+                        return (
+                            Status::Fail,
+                            "simulation succeeded, but auth credentials did not match".to_string(),
+                            Some(format!(
+                                "expected credentials {expected_creds:?}, got {actual_creds:?}"
+                            )),
+                        );
+                    }
+                }
+                if let Some(ref expected_fns) = auth_exp.auth_functions {
+                    let actual_fns: Vec<String> =
+                        entries.iter().map(|e| e.root_function.clone()).collect();
+                    if &actual_fns != expected_fns {
+                        return (
+                            Status::Fail,
+                            "simulation succeeded, but auth root functions did not match"
+                                .to_string(),
+                            Some(format!(
+                                "expected functions {expected_fns:?}, got {actual_fns:?}"
+                            )),
+                        );
+                    }
+                }
+            }
+            (
+                Status::Pass,
+                "simulation succeeded as expected".to_string(),
+                None,
+            )
         }
         SorobanAssertion::SimulationError { message_contains } => {
             if response.succeeded() {

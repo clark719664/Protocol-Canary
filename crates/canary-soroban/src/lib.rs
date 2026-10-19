@@ -11,6 +11,7 @@ pub use builder::{
     build_invoke_transaction_envelope, BuilderError, InvocationSpec, ScValInput, MAX_ARG_DEPTH,
 };
 pub use runner::{
-    DefaultSorobanRunner, SorobanAssertion, SorobanFixture, SorobanFixtureError, SorobanRunner,
+    DefaultSorobanRunner, SimulationAuthExpectation, SorobanAssertion, SorobanFixture,
+    SorobanFixtureError, SorobanRunner,
 };
-pub use simulation::simulate;
+pub use simulation::{parse_simulation_auth_entries, simulate, SimulationAuthEntry};

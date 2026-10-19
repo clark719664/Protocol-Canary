@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/StellarCanary/Protocol-Canary/main/docs/schemas/fixtures-v1.schema.json",
+  "title": "Stellar Protocol Canary fixture inventory, inventoryVersion 1",
+  "description": "The `stellar-canary fixtures --format json` document (CA-02). Required fields follow CA-02 section 3. An absent optional field means the fixture file did not carry it, never a default and never null. Consumers must ignore properties they do not know: inventoryVersion 1 only grows additively, and this schema therefore sets no `additionalProperties: false`. The closed sets are `surface`, the documented capability spellings, and the verification method and outcome.",
+  "type": "object",
+  "required": ["inventoryVersion", "toolVersion", "fixtureFormat", "protocol", "directoryFound", "counts", "otherProtocols", "fixtures"],
+  "properties": {
+    "inventoryVersion": {
+      "description": "The inventory document version. This schema validates version 1 only.",
+      "const": 1
+    },
+    "toolVersion": {
+      "description": "The Canary CLI's own semver. Informational; never use it for feature detection.",
+      "type": "string"
+    },
+    "fixtureFormat": {
+      "description": "The fixture file format the engine reads. 1 today.",
+      "const": 1
+    },
+    "protocol": {
+      "description": "The protocol this inventory lists: --protocol, else the configuration file, else 28.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "directoryFound": {
+      "description": "Whether --fixtures-dir exists as a directory. false is a successful empty answer, not an error.",
+      "type": "boolean"
+    },
+    "counts": {
+      "description": "How many fixtures of `protocol` the directory holds, by surface. total is xdr + rpc + soroban.",
+      "type": "object",
+      "required": ["total", "xdr", "rpc", "soroban"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "xdr": { "type": "integer", "minimum": 0 },
+        "rpc": { "type": "integer", "minimum": 0 },
+        "soroban": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "otherProtocols": {
+      "description": "Fixtures in the directory for every protocol other than `protocol`. Keys are the protocol number as a decimal string, values are counts. {} when there are none.",
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "fixtures": {
+      "description": "One entry per fixture of `protocol`, sorted by id comparing UTF-8 bytes.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "protocol", "surface", "category", "description", "path", "requiredCapabilities"],
+        "properties": {
+          "id": {
+            "description": "The fixture identity. Unique across the directory.",
+            "type": "string"
+          },
+          "protocol": {
+            "description": "Equal to the document's protocol.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "surface": {
+            "description": "Closed set. Adding a value is a breaking inventoryVersion change.",
+            "type": "string",
+            "enum": ["xdr", "rpc", "soroban"]
+          },
+          "category": {
+            "description": "From the fixture file. Untrusted text; never render as markup.",
+            "type": "string"
+          },
+          "description": {
+            "description": "From the fixture file. Untrusted text; never render as markup.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Fixture file path relative to --fixtures-dir, `/` separators, never absolute and never containing `..`.",
+            "type": "string"
+          },
+          "requiredCapabilities": {
+            "description": "Sorted, lowercase kebab. [] when the file lists none.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["raw-ledger-access", "rpc-client", "soroban-contract", "stellar-sdk-dependency", "wasm-artifact"]
+            }
+          },
+          "sourceReference": {
+            "description": "The file's source_reference. Omitted, not null, when the file has none.",
+            "type": "string"
+          },
+          "method": {
+            "description": "RPC fixtures: the RPC method name.",
+            "type": "string"
+          },
+          "type": {
+            "description": "XDR fixtures: the XDR type name.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "XDR fixtures: decode-success, roundtrip, and the other documented kinds.",
+            "type": "string"
+          },
+          "function": {
+            "description": "Soroban fixtures: the contract function name.",
+            "type": "string"
+          },
+          "verification": {
+            "description": "The CF-04 record copied as stored. Absent when the fixture has no record.",
+            "type": "object",
+            "required": ["verificationVersion", "fixtureId", "method", "checkedAt", "outcome"],
+            "properties": {
+              "verificationVersion": { "const": 1 },
+              "fixtureId": { "type": "string" },
+              "fixtureSha256": {
+                "description": "Reserved until CF-02. Lowercase hex when present.",
+                "type": "string"
+              },
+              "method": {
+                "type": "string",
+                "enum": ["structural", "source-checked", "live-read-only", "live-simulation"]
+              },
+              "checkedAt": { "type": "string" },
+              "network": { "type": "object" },
+              "endpointHost": { "type": "string" },
+              "verifier": { "type": "object" },
+              "evidenceRef": { "type": "string" },
+              "outcome": {
+                "type": "string",
+                "enum": ["matched", "mismatched"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

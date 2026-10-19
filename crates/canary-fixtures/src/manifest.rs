@@ -61,6 +61,17 @@ pub struct LoadedFixture {
 
 /// Parses one fixture file at `path`.
 pub fn parse_fixture_file(path: &Path) -> Result<LoadedFixture, FixtureError> {
+    let meta = std::fs::metadata(path).map_err(|source| FixtureError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if meta.len() > crate::archive::MAX_FILE_BYTES {
+        return Err(FixtureError::FileTooLarge {
+            path: path.to_path_buf(),
+            size: meta.len(),
+            limit: crate::archive::MAX_FILE_BYTES,
+        });
+    }
     let raw_text = std::fs::read_to_string(path).map_err(|source| FixtureError::Read {
         path: path.to_path_buf(),
         source,

@@ -94,7 +94,17 @@ pub enum FixtureError {
         kind: &'static str,
         referenced: PathBuf,
     },
+
+    #[error("fixture file {path} is {size} bytes, exceeding the {limit}-byte per-file size limit")]
+    FileTooLarge {
+        path: PathBuf,
+        size: u64,
+        limit: u64,
+    },
 }
+
+/// Alias for [`FixtureError`] matching the loader error type naming.
+pub type FixtureLoaderError = FixtureError;
 
 impl From<FixtureError> for CanaryError {
     fn from(error: FixtureError) -> Self {

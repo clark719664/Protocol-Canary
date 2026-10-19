@@ -23,6 +23,10 @@ use canary_core::{
 };
 use canary_fixtures::LoadedFixture;
 
+use crate::assertions::{
+    format_path, parse_path_str, parse_toml_path, resolve_segments, PathResolutionError,
+    PathSegment,
+};
 use crate::client::{RpcClient, RpcError};
 use crate::models::{GetHealthResponse, LatestLedger, NetworkInfo};
 
@@ -211,14 +215,50 @@ impl FieldAssertion {
         }
     }
 
+    /// Resolves the target field or nested path in `response`.
+    ///
+    /// - If the target is a direct top-level key in `response` (such as
+    ///   `"protocolVersion"` or a key containing a literal dot), returns it
+    ///   directly.
+    /// - Otherwise, if the target contains `.` or `[` (dot/bracket path or
+    ///   formatted `path = [...]`), walks the segments via [`resolve_segments`].
+    fn lookup<'a>(
+        &self,
+        response: &'a JsonValue,
+    ) -> Result<Option<&'a JsonValue>, PathResolutionError> {
+        let target = self.field();
+        if let Some(val) = response.get(target) {
+            return Ok(Some(val));
+        }
+        if target.contains('.') || target.contains('[') {
+            let segments = parse_path_str(target)?;
+            match resolve_segments(response, &segments) {
+                Ok(val) => Ok(Some(val)),
+                Err(err) => Err(err),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Checks this assertion against a response object, returning a
     /// human-readable failure reason if it does not hold.
     fn check(&self, response: &JsonValue) -> Result<(), String> {
-        let found = response.get(self.field());
+        let lookup_res = self.lookup(response);
+        let (found, path_err) = match lookup_res {
+            Ok(opt) => (opt, None),
+            Err(err) => (None, Some(err)),
+        };
+        let missing_detail = |field: &str| match &path_err {
+            Some(err) => {
+                format!("expected field {field:?} to be present, but it was missing ({err})")
+            }
+            None => format!("expected field {field:?} to be present, but it was missing"),
+        };
         match self {
-            FieldAssertion::Exists { field } => found.map(|_| ()).ok_or_else(|| {
-                format!("expected field {field:?} to be present, but it was missing")
-            }),
+            FieldAssertion::Exists { field } => {
+                found.map(|_| ()).ok_or_else(|| missing_detail(field))
+            }
             FieldAssertion::Absent { field } => match found {
                 None => Ok(()),
                 Some(_) => Err(format!(
@@ -226,18 +266,21 @@ impl FieldAssertion {
                 )),
             },
             FieldAssertion::Equals { field, value } => match found {
-                None => Err(format!(
-                    "expected field {field:?} to equal {value}, but it was missing"
-                )),
+                None => match &path_err {
+                    Some(err) => Err(format!(
+                        "expected field {field:?} to equal {value}, but it was missing ({err})"
+                    )),
+                    None => Err(format!(
+                        "expected field {field:?} to equal {value}, but it was missing"
+                    )),
+                },
                 Some(actual) if actual == value => Ok(()),
                 Some(actual) => Err(format!(
                     "expected field {field:?} to equal {value}, but found {actual}"
                 )),
             },
             FieldAssertion::TypeIs { field, expected } => match found {
-                None => Err(format!(
-                    "expected field {field:?} to be present, but it was missing"
-                )),
+                None => Err(missing_detail(field)),
                 Some(actual) if expected.matches(actual) => Ok(()),
                 Some(actual) => Err(format!(
                     "expected field {field:?} to have type {expected:?}, but found {actual}"
@@ -345,7 +388,15 @@ fn parse_assertion(
 
     if let Some(message) = canary_fixtures::unknown_body_keys(
         table,
-        &["kind", "field", "value", "expected_type", "min", "max"],
+        &[
+            "kind",
+            "field",
+            "path",
+            "value",
+            "expected_type",
+            "min",
+            "max",
+        ],
     ) {
         return Err(invalid(format!("[[assert]] entry: {message}")));
     }
@@ -354,11 +405,31 @@ fn parse_assertion(
         .get("kind")
         .and_then(toml::Value::as_str)
         .ok_or_else(|| invalid("assertion entry missing \"kind\"".to_string()))?;
-    let field = table
-        .get("field")
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| invalid("assertion entry missing \"field\"".to_string()))?
-        .to_string();
+
+    let field = match (table.get("field"), table.get("path")) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                "assertion entry must specify either \"field\" or \"path\", not both".to_string(),
+            ));
+        }
+        (Some(f), None) => f
+            .as_str()
+            .ok_or_else(|| invalid("assertion entry \"field\" must be a string".to_string()))?
+            .to_string(),
+        (None, Some(toml::Value::String(s))) => {
+            let segs = parse_path_str(s).map_err(|e| invalid(e.to_string()))?;
+            format_path(&segs)
+        }
+        (None, Some(p)) => {
+            let segs: Vec<PathSegment> = parse_toml_path(p).map_err(&invalid)?;
+            format_path(&segs)
+        }
+        (None, None) => {
+            return Err(invalid(
+                "assertion entry missing \"field\" (or \"path\")".to_string(),
+            ));
+        }
+    };
 
     match kind {
         "field-exists" => Ok(FieldAssertion::Exists { field }),

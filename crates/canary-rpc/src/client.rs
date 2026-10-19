@@ -139,6 +139,15 @@ pub enum RpcError {
     #[error("unexpected response shape from {method}: {reason}")]
     InvalidResponse { method: String, reason: String },
 
+    /// The endpoint returned a response body exceeding [`MAX_RPC_RESPONSE_BYTES`]
+    /// (16 MiB, per maintainer decision D-06 and CA-01 section 6).
+    ///
+    /// Reading stops as soon as the cumulative chunk size crosses `limit_bytes`
+    /// (or immediately when `Content-Length` exceeds `limit_bytes`), so an
+    /// oversized response is never buffered into RAM in full. Never retried.
+    #[error("RPC response from {method} exceeded the {limit_bytes}-byte size cap")]
+    ResponseTooLarge { method: String, limit_bytes: usize },
+
     /// The endpoint is on a different network than the run requested.
     ///
     /// Raised by [`validate_network_info`], never by the transport layer:
@@ -598,7 +607,7 @@ impl HttpRpcClient {
         method: &str,
         body: &serde_json::Value,
     ) -> Result<R, RpcError> {
-        let response = self
+        let mut response = self
             .http
             .post(&self.endpoint)
             .json(body)
@@ -619,13 +628,31 @@ impl HttpRpcClient {
             });
         }
 
-        let text = response.text().await.map_err(|e| RpcError::Transport {
+        if let Some(content_length) = response.content_length() {
+            if content_length > MAX_RPC_RESPONSE_BYTES as u64 {
+                return Err(RpcError::ResponseTooLarge {
+                    method: method.to_string(),
+                    limit_bytes: MAX_RPC_RESPONSE_BYTES,
+                });
+            }
+        }
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|e| RpcError::Transport {
             method: method.to_string(),
             message: e.to_string(),
-        })?;
+        })? {
+            if bytes.len().saturating_add(chunk.len()) > MAX_RPC_RESPONSE_BYTES {
+                return Err(RpcError::ResponseTooLarge {
+                    method: method.to_string(),
+                    limit_bytes: MAX_RPC_RESPONSE_BYTES,
+                });
+            }
+            bytes.extend_from_slice(&chunk);
+        }
 
         let envelope: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| RpcError::InvalidJson {
+            serde_json::from_slice(&bytes).map_err(|e| RpcError::InvalidJson {
                 method: method.to_string(),
                 message: e.to_string(),
             })?;
@@ -671,6 +698,10 @@ impl HttpRpcClient {
 
 /// JSON-RPC standard error code for "Method not found".
 const JSON_RPC_METHOD_NOT_FOUND: i64 = -32601;
+
+/// Maximum incoming RPC response body size (16 MiB), approved under
+/// maintainer decision D-06 and CA-01 section 6.
+pub const MAX_RPC_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 fn json_kind(value: &serde_json::Value) -> &'static str {
     match value {

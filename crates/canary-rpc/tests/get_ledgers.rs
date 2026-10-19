@@ -157,7 +157,7 @@ startLedger = 1900001
 limit = 5
 
 [[assert]]
-kind = "field-present"
+kind = "field-exists"
 field = "ledgers"
 "#;
 

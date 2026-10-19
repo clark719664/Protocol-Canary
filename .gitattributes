@@ -6,5 +6,10 @@
 # `reference_vectors_match_the_committed_ca04_digests`.
 crates/canary-project/tests/data/fingerprint/** text eol=lf
 
+# The CA-02 fixtures inventory golden is compared byte-for-byte with
+# `fixtures --format json` stdout, which is LF. Windows autocrlf must
+# not rewrite it.
+crates/canary-cli/tests/golden/fixtures-inventory-v1.json text eol=lf
+
 # The WASM artifacts are binary inputs: never convert or normalize them.
 crates/canary-project/tests/data/fingerprint/**/*.wasm binary

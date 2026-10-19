@@ -82,6 +82,25 @@ pub enum ExitCode {
 }
 
 impl ExitCode {
+    /// Returns the numeric process exit code (`0..=5`) corresponding to this [`ExitCode`] variant.
+    ///
+    /// This method provides the stable integer representation passed to [`std::process::exit`]
+    /// and reported in structured diagnostic output so CI pipelines and GitHub Actions can
+    /// branch on outcome categories deterministically without parsing terminal text.
+    ///
+    /// This conversion is infallible and never panics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use canary_core::{CanaryError, ExitCode};
+    ///
+    /// assert_eq!(ExitCode::Pass.code(), 0);
+    /// assert_eq!(ExitCode::CompatibilityFailure.code(), 1);
+    ///
+    /// let err = CanaryError::Fixture("missing fixture file".into());
+    /// assert_eq!(ExitCode::from(&err).code(), 4);
+    /// ```
     pub fn code(self) -> i32 {
         self as i32
     }

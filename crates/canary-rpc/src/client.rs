@@ -19,7 +19,8 @@ use serde_json::json;
 use canary_core::CanaryError;
 
 use crate::models::{
-    GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest, SimulationResponse,
+    FeeStatsResponse, GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest,
+    SimulationResponse,
 };
 
 /// Errors returned by the Stellar RPC client.
@@ -232,6 +233,10 @@ pub trait RpcClient {
         &self,
     ) -> impl std::future::Future<Output = Result<GetHealthResponse, RpcError>> + Send;
 
+    fn get_fee_stats(
+        &self,
+    ) -> impl std::future::Future<Output = Result<FeeStatsResponse, RpcError>> + Send;
+
     /// `getNetwork`'s JSON `result` object exactly as the endpoint returned
     /// it, including every field [`NetworkInfo`] does not model.
     ///
@@ -252,6 +257,12 @@ pub trait RpcClient {
     /// `getHealth`'s JSON `result` object exactly as the endpoint
     /// returned it. See [`RpcClient::get_network_raw`].
     fn get_health_raw(
+        &self,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
+
+    /// `getFeeStats`'s JSON `result` object exactly as the endpoint
+    /// returned it. See [`RpcClient::get_network_raw`].
+    fn get_fee_stats_raw(
         &self,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
 
@@ -822,6 +833,10 @@ impl RpcClient for HttpRpcClient {
         self.call("getHealth", json!({})).await
     }
 
+    async fn get_fee_stats(&self) -> Result<FeeStatsResponse, RpcError> {
+        self.call("getFeeStats", json!({})).await
+    }
+
     async fn get_network_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getNetwork", json!({})).await
     }
@@ -832,6 +847,10 @@ impl RpcClient for HttpRpcClient {
 
     async fn get_health_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getHealth", json!({})).await
+    }
+
+    async fn get_fee_stats_raw(&self) -> Result<serde_json::Value, RpcError> {
+        self.call_object("getFeeStats", json!({})).await
     }
 
     async fn simulate_transaction(

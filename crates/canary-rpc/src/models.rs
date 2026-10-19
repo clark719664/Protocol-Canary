@@ -1,5 +1,6 @@
 //! Typed request/response shapes for the small subset of Stellar RPC this
-//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, and `simulateTransaction`.
+//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, `getFeeStats`,
+//! and `simulateTransaction`.
 //!
 //! These mirror the documented Stellar RPC JSON-RPC methods; XDR-bearing
 //! fields stay as base64 strings here; the Soroban runner decodes them
@@ -7,6 +8,51 @@
 //! that.
 
 use serde::{Deserialize, Serialize};
+
+/// Fee distribution percentiles and transaction/ledger counts returned by
+/// `getFeeStats`.
+///
+/// Stellar RPC returns fee stroop values and `transactionCount` as strings,
+/// while `ledgerCount` is a number (CA-01 §2). To accommodate both standard
+/// Stellar RPC string representations and integer values in synthetic unit-test
+/// fixtures (whilst still rejecting non-numeric strings when deserialized as
+/// numbers or vice-versa), string fields deserialize strictly as strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeeDistribution {
+    pub max: String,
+    pub min: String,
+    pub mode: String,
+    pub p10: String,
+    pub p20: String,
+    pub p30: String,
+    pub p40: String,
+    pub p50: String,
+    pub p60: String,
+    pub p70: String,
+    pub p80: String,
+    pub p90: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95: Option<String>,
+    pub p99: String,
+    pub transaction_count: String,
+    pub ledger_count: u32,
+}
+
+/// The result of `getFeeStats`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getFeeStats>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeeStatsResponse {
+    pub soroban_inclusion_fee: FeeDistribution,
+    #[serde(alias = "feeDistribution")]
+    pub inclusion_fee: FeeDistribution,
+    pub latest_ledger: u32,
+}
+
+/// Type alias for [`FeeStatsResponse`].
+pub type GetFeeStatsResponse = FeeStatsResponse;
 
 /// The result of `getHealth`.
 ///

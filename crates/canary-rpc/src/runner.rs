@@ -24,7 +24,7 @@ use canary_core::{
 use canary_fixtures::LoadedFixture;
 
 use crate::client::{RpcClient, RpcError};
-use crate::models::{GetHealthResponse, LatestLedger, NetworkInfo};
+use crate::models::{FeeStatsResponse, GetHealthResponse, LatestLedger, NetworkInfo};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcFixtureError {
@@ -47,6 +47,7 @@ pub enum RpcMethod {
     GetNetwork,
     GetLatestLedger,
     GetHealth,
+    GetFeeStats,
 }
 
 impl std::str::FromStr for RpcMethod {
@@ -57,8 +58,9 @@ impl std::str::FromStr for RpcMethod {
             "get-network" => Ok(RpcMethod::GetNetwork),
             "get-latest-ledger" => Ok(RpcMethod::GetLatestLedger),
             "get-health" => Ok(RpcMethod::GetHealth),
+            "get-fee-stats" => Ok(RpcMethod::GetFeeStats),
             other => Err(format!(
-                "unsupported rpc method {other:?}: supported methods are: \"get-network\", \"get-latest-ledger\", \"get-health\""
+                "unsupported rpc method {other:?}: supported methods are: \"get-network\", \"get-latest-ledger\", \"get-health\", \"get-fee-stats\""
             )),
         }
     }
@@ -493,6 +495,7 @@ impl<C: RpcClient + Sync> RpcRunner for DefaultRpcRunner<C> {
             RpcMethod::GetNetwork => self.client.get_network_raw().await,
             RpcMethod::GetLatestLedger => self.client.get_latest_ledger_raw().await,
             RpcMethod::GetHealth => self.client.get_health_raw().await,
+            RpcMethod::GetFeeStats => self.client.get_fee_stats_raw().await,
         };
 
         let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -580,6 +583,11 @@ pub async fn observe_latest_ledger(client: &impl RpcClient) -> Result<LatestLedg
 /// Fetches endpoint health via `getHealth`.
 pub async fn observe_health(client: &impl RpcClient) -> Result<GetHealthResponse, RpcError> {
     client.get_health().await
+}
+
+/// Fetches endpoint fee statistics via `getFeeStats`.
+pub async fn observe_fee_stats(client: &impl RpcClient) -> Result<FeeStatsResponse, RpcError> {
+    client.get_fee_stats().await
 }
 
 #[cfg(test)]

@@ -69,6 +69,7 @@ impl std::str::FromStr for RpcMethod {
 pub enum JsonType {
     String,
     Number,
+    Integer,
     Bool,
     Object,
     Array,
@@ -80,6 +81,7 @@ impl JsonType {
         match self {
             JsonType::String => value.is_string(),
             JsonType::Number => value.is_number(),
+            JsonType::Integer => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
             JsonType::Bool => value.is_boolean(),
             JsonType::Object => value.is_object(),
             JsonType::Array => value.is_array(),
@@ -95,6 +97,7 @@ impl std::str::FromStr for JsonType {
         match s {
             "string" => Ok(JsonType::String),
             "number" => Ok(JsonType::Number),
+            "integer" => Ok(JsonType::Integer),
             "bool" => Ok(JsonType::Bool),
             "object" => Ok(JsonType::Object),
             "array" => Ok(JsonType::Array),
@@ -190,6 +193,101 @@ fn compare_numbers(value: &serde_json::Number, bound: &serde_json::Number) -> Op
     value.as_f64()?.partial_cmp(&bound.as_f64()?)
 }
 
+/// A `field-one-of` assertion checking that a field's observed value
+/// matches one of a non-empty allowed list of candidate JSON values
+/// (CA-01 section 4.2).
+///
+/// 64-bit signed (`i64`) and unsigned (`u64`) integers are compared
+/// directly without precision loss; no coercion is performed between
+/// strings, numbers, or booleans.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldOneOfAssertion {
+    pub field: String,
+    pub allowed: Vec<JsonValue>,
+}
+
+impl FieldOneOfAssertion {
+    /// Creates a new [`FieldOneOfAssertion`] for `field` and `allowed`
+    /// candidate values.
+    pub fn new(field: impl Into<String>, allowed: Vec<JsonValue>) -> Self {
+        Self {
+            field: field.into(),
+            allowed,
+        }
+    }
+
+    /// Returns a slice of the allowed candidate values.
+    pub fn values(&self) -> &[JsonValue] {
+        &self.allowed
+    }
+
+    /// Checks whether `found` equals one of `allowed` without precision
+    /// loss, returning a descriptive failure reason listing the observed
+    /// value and all allowed candidates if not.
+    pub fn check_value(&self, found: Option<&JsonValue>) -> Result<(), String> {
+        let Some(actual) = found else {
+            return Err(format!(
+                "expected field {:?} to be one of {}, but it was missing",
+                self.field,
+                self.allowed_description()
+            ));
+        };
+        if self
+            .allowed
+            .iter()
+            .any(|candidate| json_values_equal_exact(actual, candidate))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected field {:?} to be one of {}, but found {}",
+                self.field,
+                self.allowed_description(),
+                actual
+            ))
+        }
+    }
+
+    fn allowed_description(&self) -> String {
+        let candidates: Vec<String> = self.allowed.iter().map(ToString::to_string).collect();
+        format!("[{}]", candidates.join(", "))
+    }
+}
+
+/// Exact JSON value comparison that preserves full 64-bit signed and
+/// unsigned integer precision without coercing across JSON types or
+/// between integers and fractional floats.
+fn json_values_equal_exact(a: &JsonValue, b: &JsonValue) -> bool {
+    match (a, b) {
+        (JsonValue::Number(na), JsonValue::Number(nb)) => {
+            if let (Some(ia), Some(ib)) = (na.as_i64(), nb.as_i64()) {
+                return ia == ib;
+            }
+            if let (Some(ua), Some(ub)) = (na.as_u64(), nb.as_u64()) {
+                return ua == ub;
+            }
+            if (na.is_i64() || na.is_u64()) != (nb.is_i64() || nb.is_u64()) {
+                return false;
+            }
+            na == nb
+        }
+        (JsonValue::Array(aa), JsonValue::Array(ab)) => {
+            aa.len() == ab.len()
+                && aa
+                    .iter()
+                    .zip(ab.iter())
+                    .all(|(x, y)| json_values_equal_exact(x, y))
+        }
+        (JsonValue::Object(oa), JsonValue::Object(ob)) => {
+            oa.len() == ob.len()
+                && oa
+                    .iter()
+                    .all(|(k, va)| ob.get(k).is_some_and(|vb| json_values_equal_exact(va, vb)))
+        }
+        _ => a == b,
+    }
+}
+
 /// One assertion about a field in the RPC response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldAssertion {
@@ -198,6 +296,7 @@ pub enum FieldAssertion {
     Equals { field: String, value: JsonValue },
     TypeIs { field: String, expected: JsonType },
     NumberRange(FieldRangeAssertion),
+    OneOf(FieldOneOfAssertion),
 }
 
 impl FieldAssertion {
@@ -208,12 +307,13 @@ impl FieldAssertion {
             | FieldAssertion::Equals { field, .. }
             | FieldAssertion::TypeIs { field, .. } => field,
             FieldAssertion::NumberRange(assertion) => &assertion.field,
+            FieldAssertion::OneOf(assertion) => &assertion.field,
         }
     }
 
     /// Checks this assertion against a response object, returning a
     /// human-readable failure reason if it does not hold.
-    fn check(&self, response: &JsonValue) -> Result<(), String> {
+    pub fn check(&self, response: &JsonValue) -> Result<(), String> {
         let found = response.get(self.field());
         match self {
             FieldAssertion::Exists { field } => found.map(|_| ()).ok_or_else(|| {
@@ -229,7 +329,7 @@ impl FieldAssertion {
                 None => Err(format!(
                     "expected field {field:?} to equal {value}, but it was missing"
                 )),
-                Some(actual) if actual == value => Ok(()),
+                Some(actual) if json_values_equal_exact(actual, value) => Ok(()),
                 Some(actual) => Err(format!(
                     "expected field {field:?} to equal {value}, but found {actual}"
                 )),
@@ -244,6 +344,7 @@ impl FieldAssertion {
                 )),
             },
             FieldAssertion::NumberRange(assertion) => assertion.check_value(found),
+            FieldAssertion::OneOf(assertion) => assertion.check_value(found),
         }
     }
 }
@@ -345,7 +446,16 @@ fn parse_assertion(
 
     if let Some(message) = canary_fixtures::unknown_body_keys(
         table,
-        &["kind", "field", "value", "expected_type", "min", "max"],
+        &[
+            "kind",
+            "field",
+            "value",
+            "expected_type",
+            "min",
+            "max",
+            "values",
+            "allowed",
+        ],
     ) {
         return Err(invalid(format!("[[assert]] entry: {message}")));
     }
@@ -403,8 +513,36 @@ fn parse_assertion(
                 max,
             }))
         }
+        "field-one-of" => {
+            if table.contains_key("values") && table.contains_key("allowed") {
+                return Err(invalid(
+                    "field-one-of assertion cannot specify both \"values\" and \"allowed\""
+                        .to_string(),
+                ));
+            }
+            let raw_values = table
+                .get("values")
+                .or_else(|| table.get("allowed"))
+                .ok_or_else(|| {
+                    invalid(
+                        "field-one-of assertion missing required array \"values\"".to_string(),
+                    )
+                })?;
+            let items = raw_values.as_array().ok_or_else(|| {
+                invalid(format!(
+                    "field-one-of \"values\" must be a non-empty array, but found {raw_values}"
+                ))
+            })?;
+            if items.is_empty() {
+                return Err(invalid(
+                    "field-one-of \"values\" must be a non-empty array".to_string(),
+                ));
+            }
+            let allowed = items.iter().map(toml_to_json).collect();
+            Ok(FieldAssertion::OneOf(FieldOneOfAssertion { field, allowed }))
+        }
         other => Err(invalid(format!(
-            "unsupported assertion kind {other:?}: expected one of \"field-exists\", \"field-absent\", \"field-equals\", \"field-type\", \"field-number-range\""
+            "unsupported assertion kind {other:?}: expected one of \"field-exists\", \"field-absent\", \"field-equals\", \"field-type\", \"field-number-range\", \"field-one-of\""
         ))),
     }
 }
@@ -924,6 +1062,80 @@ mod tests {
             "kind = \"field-number-range\"\nfield = \"sequence\"\nmin = 1\nexpect = \"x\"\n",
         );
         assert!(err.contains("unknown key(s) \"expect\""), "{err}");
+    }
+
+    #[test]
+    fn field_one_of_passes_for_matching_string_integer_and_boolean_values() {
+        let strings = range_assertion(
+            "kind = \"field-one-of\"\nfield = \"status\"\nvalues = [\"SUCCESS\", \"NOT_FOUND\", \"FAILED\"]\n",
+        );
+        assert!(strings.check(&json!({ "status": "SUCCESS" })).is_ok());
+        assert!(strings.check(&json!({ "status": "FAILED" })).is_ok());
+        let err = strings.check(&json!({ "status": "PENDING" })).unwrap_err();
+        assert!(
+            err.contains("[\"SUCCESS\", \"NOT_FOUND\", \"FAILED\"]"),
+            "{err}"
+        );
+        assert!(err.contains("but found \"PENDING\""), "{err}");
+
+        let ints = range_assertion(
+            "kind = \"field-one-of\"\nfield = \"protocolVersion\"\nvalues = [27, 28, 29]\n",
+        );
+        assert!(ints.check(&json!({ "protocolVersion": 28 })).is_ok());
+        assert!(ints.check(&json!({ "protocolVersion": 28.0 })).is_err());
+        assert!(ints.check(&json!({ "protocolVersion": "28" })).is_err());
+
+        let bools =
+            range_assertion("kind = \"field-one-of\"\nfield = \"healthy\"\nallowed = [true]\n");
+        assert!(bools.check(&json!({ "healthy": true })).is_ok());
+        assert!(bools.check(&json!({ "healthy": false })).is_err());
+    }
+
+    #[test]
+    fn field_one_of_preserves_64bit_signed_and_unsigned_integer_precision() {
+        // 2^53 + 1 and 2^53 + 2 collapse to the same IEEE-754 f64, so a
+        // float-based comparison would falsely equate them.
+        let exact_i64: i64 = (1_i64 << 53) + 1;
+        let adjacent_i64: i64 = (1_i64 << 53) + 2;
+        let assertion = FieldAssertion::OneOf(FieldOneOfAssertion::new(
+            "sequence",
+            vec![json!(exact_i64), json!(u64::MAX), json!(i64::MIN)],
+        ));
+
+        assert!(assertion.check(&json!({ "sequence": exact_i64 })).is_ok());
+        assert!(assertion.check(&json!({ "sequence": u64::MAX })).is_ok());
+        assert!(assertion.check(&json!({ "sequence": i64::MIN })).is_ok());
+        assert!(assertion
+            .check(&json!({ "sequence": adjacent_i64 }))
+            .is_err());
+        assert!(assertion
+            .check(&json!({ "sequence": u64::MAX - 1 }))
+            .is_err());
+    }
+
+    #[test]
+    fn field_type_integer_accepts_integers_and_rejects_floats_and_strings() {
+        let int_type = range_assertion(
+            "kind = \"field-type\"\nfield = \"protocolVersion\"\nexpected_type = \"integer\"\n",
+        );
+        assert!(int_type.check(&json!({ "protocolVersion": 28 })).is_ok());
+        assert!(int_type.check(&json!({ "protocolVersion": -1 })).is_ok());
+        assert!(int_type
+            .check(&json!({ "protocolVersion": u64::MAX }))
+            .is_ok());
+        assert!(int_type.check(&json!({ "protocolVersion": 28.5 })).is_err());
+        assert!(int_type.check(&json!({ "protocolVersion": 28.0 })).is_err());
+        assert!(int_type.check(&json!({ "protocolVersion": "28" })).is_err());
+    }
+
+    #[test]
+    fn field_one_of_validates_non_empty_array_when_parsing_fixture() {
+        assert!(
+            range_err("kind = \"field-one-of\"\nfield = \"status\"\nvalues = []\n")
+                .contains("non-empty array")
+        );
+        assert!(range_err("kind = \"field-one-of\"\nfield = \"status\"\n")
+            .contains("missing required array"));
     }
 
     #[tokio::test]

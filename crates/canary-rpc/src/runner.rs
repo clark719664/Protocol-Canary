@@ -190,6 +190,82 @@ fn compare_numbers(value: &serde_json::Number, bound: &serde_json::Number) -> Op
     value.as_f64()?.partial_cmp(&bound.as_f64()?)
 }
 
+/// The inclusive bounds of a `field-length` assertion on a JSON array
+/// (CA-01 section 4.2).
+///
+/// At least one of `exact`, `min`, or `max` is set when parsed from a
+/// fixture. `min` (`min_items` or `min`) and `max` (`max_items` or `max`)
+/// are inclusive non-negative element counts, while `exact` requires the
+/// array length to equal `exact` elements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldLengthAssertion {
+    pub field: String,
+    pub exact: Option<usize>,
+    pub min: Option<usize>,
+    pub max: Option<usize>,
+}
+
+impl FieldLengthAssertion {
+    /// Checks the observed value of the field against the length bounds,
+    /// returning a human-readable failure reason if it does not hold.
+    ///
+    /// A missing field or a value that is not a JSON array fails the
+    /// assertion with a clear `"expected array"` diagnostic.
+    pub fn check_value(&self, found: Option<&JsonValue>) -> Result<(), String> {
+        let Some(actual) = found else {
+            return Err(format!(
+                "expected field {:?} to be present, but it was missing",
+                self.field
+            ));
+        };
+        let JsonValue::Array(items) = actual else {
+            return Err(format!(
+                "expected array for field {:?} with length {}, but found {}",
+                self.field,
+                self.bounds_description(),
+                actual
+            ));
+        };
+        let len = items.len();
+        if let Some(exact) = self.exact {
+            if len != exact {
+                return Err(self.out_of_range(len));
+            }
+        }
+        if let Some(min) = self.min {
+            if len < min {
+                return Err(self.out_of_range(len));
+            }
+        }
+        if let Some(max) = self.max {
+            if len > max {
+                return Err(self.out_of_range(len));
+            }
+        }
+        Ok(())
+    }
+
+    fn bounds_description(&self) -> String {
+        if let Some(exact) = self.exact {
+            return format!("== {exact}");
+        }
+        match (self.min, self.max) {
+            (Some(min), Some(max)) => format!("[{min}, {max}]"),
+            (Some(min), None) => format!(">= {min}"),
+            (None, Some(max)) => format!("<= {max}"),
+            (None, None) => "any length".to_string(),
+        }
+    }
+
+    fn out_of_range(&self, actual_len: usize) -> String {
+        format!(
+            "expected array field {:?} to have length {}, but found length {actual_len}",
+            self.field,
+            self.bounds_description(),
+        )
+    }
+}
+
 /// One assertion about a field in the RPC response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldAssertion {
@@ -198,6 +274,7 @@ pub enum FieldAssertion {
     Equals { field: String, value: JsonValue },
     TypeIs { field: String, expected: JsonType },
     NumberRange(FieldRangeAssertion),
+    Length(FieldLengthAssertion),
 }
 
 impl FieldAssertion {
@@ -208,12 +285,13 @@ impl FieldAssertion {
             | FieldAssertion::Equals { field, .. }
             | FieldAssertion::TypeIs { field, .. } => field,
             FieldAssertion::NumberRange(assertion) => &assertion.field,
+            FieldAssertion::Length(assertion) => &assertion.field,
         }
     }
 
     /// Checks this assertion against a response object, returning a
     /// human-readable failure reason if it does not hold.
-    fn check(&self, response: &JsonValue) -> Result<(), String> {
+    pub fn check(&self, response: &JsonValue) -> Result<(), String> {
         let found = response.get(self.field());
         match self {
             FieldAssertion::Exists { field } => found.map(|_| ()).ok_or_else(|| {
@@ -244,6 +322,7 @@ impl FieldAssertion {
                 )),
             },
             FieldAssertion::NumberRange(assertion) => assertion.check_value(found),
+            FieldAssertion::Length(assertion) => assertion.check_value(found),
         }
     }
 }
@@ -345,7 +424,17 @@ fn parse_assertion(
 
     if let Some(message) = canary_fixtures::unknown_body_keys(
         table,
-        &["kind", "field", "value", "expected_type", "min", "max"],
+        &[
+            "kind",
+            "field",
+            "value",
+            "expected_type",
+            "min",
+            "max",
+            "exact",
+            "min_items",
+            "max_items",
+        ],
     ) {
         return Err(invalid(format!("[[assert]] entry: {message}")));
     }
@@ -403,10 +492,90 @@ fn parse_assertion(
                 max,
             }))
         }
+        "field-length" => {
+            if table.contains_key("min_items") && table.contains_key("min") {
+                return Err(invalid(
+                    "field-length assertion cannot specify both \"min_items\" and \"min\""
+                        .to_string(),
+                ));
+            }
+            if table.contains_key("max_items") && table.contains_key("max") {
+                return Err(invalid(
+                    "field-length assertion cannot specify both \"max_items\" and \"max\""
+                        .to_string(),
+                ));
+            }
+            let exact = parse_length_bound(table, "exact", &invalid)?;
+            let min = match parse_length_bound(table, "min_items", &invalid)? {
+                Some(v) => Some(v),
+                None => parse_length_bound(table, "min", &invalid)?,
+            };
+            let max = match parse_length_bound(table, "max_items", &invalid)? {
+                Some(v) => Some(v),
+                None => parse_length_bound(table, "max", &invalid)?,
+            };
+            if exact.is_none() && min.is_none() && max.is_none() {
+                return Err(invalid(
+                    "field-length assertion requires at least one of \"exact\", \"min_items\" (\"min\"), or \"max_items\" (\"max\")"
+                        .to_string(),
+                ));
+            }
+            if let (Some(min), Some(max)) = (min, max) {
+                if min > max {
+                    return Err(invalid(format!(
+                        "field-length assertion has min {min} greater than max {max}"
+                    )));
+                }
+            }
+            if let Some(exact) = exact {
+                if let Some(min) = min {
+                    if exact < min {
+                        return Err(invalid(format!(
+                            "field-length assertion has exact {exact} less than min {min}"
+                        )));
+                    }
+                }
+                if let Some(max) = max {
+                    if exact > max {
+                        return Err(invalid(format!(
+                            "field-length assertion has exact {exact} greater than max {max}"
+                        )));
+                    }
+                }
+            }
+            Ok(FieldAssertion::Length(FieldLengthAssertion {
+                field,
+                exact,
+                min,
+                max,
+            }))
+        }
         other => Err(invalid(format!(
-            "unsupported assertion kind {other:?}: expected one of \"field-exists\", \"field-absent\", \"field-equals\", \"field-type\", \"field-number-range\""
+            "unsupported assertion kind {other:?}: expected one of \"field-exists\", \"field-absent\", \"field-equals\", \"field-type\", \"field-number-range\", \"field-length\""
         ))),
     }
+}
+
+/// Parses one `field-length` bound: a non-negative integer.
+fn parse_length_bound(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+    invalid: &impl Fn(String) -> RpcFixtureError,
+) -> Result<Option<usize>, RpcFixtureError> {
+    let Some(value) = table.get(key) else {
+        return Ok(None);
+    };
+    let toml::Value::Integer(i) = value else {
+        return Err(invalid(format!(
+            "field-length {key:?} must be a non-negative integer, but found {value}"
+        )));
+    };
+    let n = usize::try_from(*i).map_err(|_| {
+        invalid(format!(
+            "field-length {key:?} must be a non-negative integer, but found {i}"
+        ))
+    })?;
+    Ok(Some(n))
 }
 
 /// Parses one `field-number-range` bound: a TOML integer or float.
@@ -924,6 +1093,59 @@ mod tests {
             "kind = \"field-number-range\"\nfield = \"sequence\"\nmin = 1\nexpect = \"x\"\n",
         );
         assert!(err.contains("unknown key(s) \"expect\""), "{err}");
+    }
+
+    #[test]
+    fn field_length_passes_for_exact_min_max_and_range_bounds() {
+        let exact = range_assertion("kind = \"field-length\"\nfield = \"entries\"\nexact = 2\n");
+        assert!(exact.check(&json!({ "entries": [1, 2] })).is_ok());
+        assert!(exact.check(&json!({ "entries": [1] })).is_err());
+
+        let bounded = range_assertion(
+            "kind = \"field-length\"\nfield = \"entries\"\nmin_items = 1\nmax_items = 3\n",
+        );
+        assert!(bounded.check(&json!({ "entries": [1] })).is_ok());
+        assert!(bounded.check(&json!({ "entries": [1, 2, 3] })).is_ok());
+        assert!(bounded.check(&json!({ "entries": [] })).is_err());
+        assert!(bounded.check(&json!({ "entries": [1, 2, 3, 4] })).is_err());
+
+        let aliases =
+            range_assertion("kind = \"field-length\"\nfield = \"entries\"\nmin = 0\nmax = 2\n");
+        assert!(aliases.check(&json!({ "entries": [] })).is_ok());
+        assert!(aliases.check(&json!({ "entries": ["a", "b"] })).is_ok());
+        assert!(aliases
+            .check(&json!({ "entries": ["a", "b", "c"] }))
+            .is_err());
+    }
+
+    #[test]
+    fn field_length_rejects_non_arrays_with_expected_array_diagnostic() {
+        let assertion =
+            range_assertion("kind = \"field-length\"\nfield = \"entries\"\nmin_items = 1\n");
+        for value in [
+            json!("abc"),
+            json!(3),
+            json!(true),
+            json!(null),
+            json!({ "length": 1 }),
+        ] {
+            let err = assertion.check(&json!({ "entries": value })).unwrap_err();
+            assert!(err.contains("expected array"), "{err}");
+        }
+    }
+
+    #[test]
+    fn field_length_validates_bounds_when_parsing_fixture() {
+        assert!(range_err("kind = \"field-length\"\nfield = \"entries\"\n")
+            .contains("requires at least one"));
+        assert!(range_err(
+            "kind = \"field-length\"\nfield = \"entries\"\nmin_items = 5\nmax_items = 2\n"
+        )
+        .contains("min 5 greater than max 2"));
+        assert!(
+            range_err("kind = \"field-length\"\nfield = \"entries\"\nmin_items = -1\n")
+                .contains("non-negative integer")
+        );
     }
 
     #[tokio::test]

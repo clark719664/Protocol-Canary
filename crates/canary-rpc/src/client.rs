@@ -19,7 +19,8 @@ use serde_json::json;
 use canary_core::CanaryError;
 
 use crate::models::{
-    GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest, SimulationResponse,
+    GetHealthResponse, GetLedgersPagination, GetLedgersRequest, GetLedgersResponse, LatestLedger,
+    NetworkInfo, SimulationRequest, SimulationResponse,
 };
 
 /// Errors returned by the Stellar RPC client.
@@ -169,6 +170,11 @@ pub enum RpcError {
     /// how many attempts were made before giving up.
     #[error("RPC endpoint rate-limited {method} after {attempts} attempt(s)")]
     RateLimited { method: String, attempts: u32 },
+
+    /// Client-side request parameter validation failed before dispatching to
+    /// the endpoint (for example, `start_ledger == 0` on `getLedgers`).
+    #[error("invalid arguments for {method}: {reason}")]
+    InvalidRequest { method: String, reason: String },
 }
 
 impl From<RpcError> for CanaryError {
@@ -232,6 +238,12 @@ pub trait RpcClient {
         &self,
     ) -> impl std::future::Future<Output = Result<GetHealthResponse, RpcError>> + Send;
 
+    fn get_ledgers(
+        &self,
+        start_ledger: u32,
+        limit: Option<u32>,
+    ) -> impl std::future::Future<Output = Result<GetLedgersResponse, RpcError>> + Send;
+
     /// `getNetwork`'s JSON `result` object exactly as the endpoint returned
     /// it, including every field [`NetworkInfo`] does not model.
     ///
@@ -253,6 +265,13 @@ pub trait RpcClient {
     /// returned it. See [`RpcClient::get_network_raw`].
     fn get_health_raw(
         &self,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
+
+    /// `getLedgers`'s JSON `result` object exactly as the endpoint
+    /// returned it. See [`RpcClient::get_network_raw`].
+    fn get_ledgers_raw(
+        &self,
+        params: serde_json::Value,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
 
     fn simulate_transaction(
@@ -822,6 +841,28 @@ impl RpcClient for HttpRpcClient {
         self.call("getHealth", json!({})).await
     }
 
+    async fn get_ledgers(
+        &self,
+        start_ledger: u32,
+        limit: Option<u32>,
+    ) -> Result<GetLedgersResponse, RpcError> {
+        if start_ledger == 0 {
+            return Err(RpcError::InvalidRequest {
+                method: "getLedgers".to_string(),
+                reason: "start_ledger must be greater than 0".to_string(),
+            });
+        }
+        let pagination = limit.map(|l| GetLedgersPagination {
+            limit: Some(l),
+            cursor: None,
+        });
+        let req = GetLedgersRequest {
+            start_ledger,
+            pagination,
+        };
+        self.call("getLedgers", req).await
+    }
+
     async fn get_network_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getNetwork", json!({})).await
     }
@@ -832,6 +873,13 @@ impl RpcClient for HttpRpcClient {
 
     async fn get_health_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getHealth", json!({})).await
+    }
+
+    async fn get_ledgers_raw(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        self.call_object("getLedgers", params).await
     }
 
     async fn simulate_transaction(

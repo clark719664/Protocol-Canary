@@ -1,5 +1,6 @@
 //! Typed request/response shapes for the small subset of Stellar RPC this
-//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, and `simulateTransaction`.
+//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, `getLedgers`,
+//! and `simulateTransaction`.
 //!
 //! These mirror the documented Stellar RPC JSON-RPC methods; XDR-bearing
 //! fields stay as base64 strings here; the Soroban runner decodes them
@@ -7,6 +8,60 @@
 //! that.
 
 use serde::{Deserialize, Serialize};
+
+/// Pagination options for `getLedgers`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetLedgersPagination {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// The parameters of `getLedgers`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgers>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLedgersRequest {
+    pub start_ledger: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pagination: Option<GetLedgersPagination>,
+}
+
+/// A single ledger header entry in a `getLedgers` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerHeaderInfo {
+    pub hash: String,
+    pub sequence: u32,
+    #[serde(alias = "closeTime")]
+    pub ledger_close_time: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_xdr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_xdr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+}
+
+/// The result of `getLedgers`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgers>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetLedgersResponse {
+    pub ledgers: Vec<LedgerHeaderInfo>,
+    pub latest_ledger: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_ledger_close_time: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_ledger: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_ledger_close_time: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
 
 /// The result of `getHealth`.
 ///

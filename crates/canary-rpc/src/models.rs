@@ -1,5 +1,6 @@
 //! Typed request/response shapes for the small subset of Stellar RPC this
-//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, and `simulateTransaction`.
+//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`,
+//! `getTransaction`, and `simulateTransaction`.
 //!
 //! These mirror the documented Stellar RPC JSON-RPC methods; XDR-bearing
 //! fields stay as base64 strings here; the Soroban runner decodes them
@@ -7,6 +8,57 @@
 //! that.
 
 use serde::{Deserialize, Serialize};
+
+/// The parameters of `getTransaction`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getTransaction>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTransactionRequest {
+    /// 64-character lowercase hex transaction hash.
+    pub hash: String,
+}
+
+/// Execution status of a transaction returned by `getTransaction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TransactionStatus {
+    Success,
+    NotFound,
+    Failed,
+}
+
+/// The result of `getTransaction`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getTransaction>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetTransactionResponse {
+    pub status: TransactionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
+    pub latest_ledger: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_ledger_close_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_ledger: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_ledger_close_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_order: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_bump: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope_xdr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_xdr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_meta_xdr: Option<String>,
+}
 
 /// The result of `getHealth`.
 ///

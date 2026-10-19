@@ -19,7 +19,8 @@ use serde_json::json;
 use canary_core::CanaryError;
 
 use crate::models::{
-    GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest, SimulationResponse,
+    GetHealthResponse, GetTransactionRequest, GetTransactionResponse, LatestLedger, NetworkInfo,
+    SimulationRequest, SimulationResponse,
 };
 
 /// Errors returned by the Stellar RPC client.
@@ -169,6 +170,12 @@ pub enum RpcError {
     /// how many attempts were made before giving up.
     #[error("RPC endpoint rate-limited {method} after {attempts} attempt(s)")]
     RateLimited { method: String, attempts: u32 },
+
+    /// Client-side request parameter validation failed before dispatching to
+    /// the endpoint (for example, a transaction hash that is not 64 lowercase
+    /// hex characters).
+    #[error("invalid arguments for {method}: {reason}")]
+    InvalidRequest { method: String, reason: String },
 }
 
 impl From<RpcError> for CanaryError {
@@ -232,6 +239,11 @@ pub trait RpcClient {
         &self,
     ) -> impl std::future::Future<Output = Result<GetHealthResponse, RpcError>> + Send;
 
+    fn get_transaction(
+        &self,
+        hash: &str,
+    ) -> impl std::future::Future<Output = Result<GetTransactionResponse, RpcError>> + Send;
+
     /// `getNetwork`'s JSON `result` object exactly as the endpoint returned
     /// it, including every field [`NetworkInfo`] does not model.
     ///
@@ -253,6 +265,13 @@ pub trait RpcClient {
     /// returned it. See [`RpcClient::get_network_raw`].
     fn get_health_raw(
         &self,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
+
+    /// `getTransaction`'s JSON `result` object exactly as the endpoint
+    /// returned it. See [`RpcClient::get_network_raw`].
+    fn get_transaction_raw(
+        &self,
+        params: serde_json::Value,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
 
     fn simulate_transaction(
@@ -822,6 +841,26 @@ impl RpcClient for HttpRpcClient {
         self.call("getHealth", json!({})).await
     }
 
+    async fn get_transaction(&self, hash: &str) -> Result<GetTransactionResponse, RpcError> {
+        let valid_hex = hash.len() == 64
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if !valid_hex {
+            return Err(RpcError::InvalidRequest {
+                method: "getTransaction".to_string(),
+                reason: format!(
+                    "transaction hash {hash:?} must be 64 lowercase hex characters (got length {})",
+                    hash.len()
+                ),
+            });
+        }
+        let req = GetTransactionRequest {
+            hash: hash.to_string(),
+        };
+        self.call("getTransaction", req).await
+    }
+
     async fn get_network_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getNetwork", json!({})).await
     }
@@ -832,6 +871,13 @@ impl RpcClient for HttpRpcClient {
 
     async fn get_health_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getHealth", json!({})).await
+    }
+
+    async fn get_transaction_raw(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        self.call_object("getTransaction", params).await
     }
 
     async fn simulate_transaction(

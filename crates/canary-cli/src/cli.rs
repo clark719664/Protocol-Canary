@@ -447,6 +447,14 @@ pub struct FixturesArgs {
     /// Shorthand for --format json.
     #[arg(long)]
     pub json: bool,
+
+    /// Filter fixtures by compatibility surface (`xdr`, `rpc`, or `soroban`).
+    #[arg(long, value_name = "SURFACE")]
+    pub surface: Option<String>,
+
+    /// Filter fixtures by category (case-insensitive exact match).
+    #[arg(long, value_name = "CATEGORY")]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Parser)]

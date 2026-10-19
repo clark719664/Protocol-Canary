@@ -55,6 +55,23 @@ fn validated_protocol_flag(protocol: Option<u32>) -> Result<Option<u32>, CanaryE
     }
 }
 
+/// Parses and validates an optional `--surface` filter (`xdr`, `rpc`, or `soroban`).
+fn validated_surface_flag(
+    surface: Option<&str>,
+) -> Result<Option<canary_core::Surface>, CanaryError> {
+    match surface {
+        None => Ok(None),
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "xdr" => Ok(Some(canary_core::Surface::Xdr)),
+            "rpc" => Ok(Some(canary_core::Surface::Rpc)),
+            "soroban" => Ok(Some(canary_core::Surface::Soroban)),
+            _ => Err(CanaryError::Configuration(format!(
+                "unknown surface {raw:?}; valid surfaces are: xdr, rpc, soroban"
+            ))),
+        },
+    }
+}
+
 /// The directory a command operates on (CF-07 section 2).
 ///
 /// It is the current directory unless `--project-root` is given, and it is
@@ -1104,13 +1121,24 @@ fn run_fixtures_inner(args: FixturesArgs) -> Result<ExitCode, CanaryError> {
     let fixtures_dir = project_root.resolve_input(&settings.fixtures_dir);
 
     let protocol = validated_protocol_flag(args.protocol)?.unwrap_or(config.protocol);
+    let surface_filter = validated_surface_flag(args.surface.as_deref())?;
+    let category_filter = args.category.as_deref().map(str::trim);
 
     let loaded_fixtures = if fixtures_dir.is_dir() {
         canary_fixtures::load_directory(&fixtures_dir)?
     } else {
         Vec::new()
     };
-    let store = canary_fixtures::validate(&loaded_fixtures)?;
+    let _ = canary_fixtures::validate(&loaded_fixtures)?;
+
+    let filtered_fixtures: Vec<_> = loaded_fixtures
+        .into_iter()
+        .filter(|f| {
+            surface_filter.is_none_or(|s| f.metadata.surface == s)
+                && category_filter.is_none_or(|c| f.metadata.category.eq_ignore_ascii_case(c))
+        })
+        .collect();
+    let store = canary_fixtures::validate(&filtered_fixtures)?;
 
     let format = if args.json {
         FixturesFormat::Json
@@ -1150,7 +1178,7 @@ fn run_fixtures_inner(args: FixturesArgs) -> Result<ExitCode, CanaryError> {
                 protocol,
                 fixtures_dir.is_dir(),
                 &fixtures_dir,
-                &loaded_fixtures,
+                &filtered_fixtures,
             );
             print!("{}", fixtures_json::render(&inventory));
         }
@@ -1328,6 +1356,8 @@ mod tests {
             config: config.map(PathBuf::from),
             format: crate::cli::FixturesFormat::Terminal,
             json: false,
+            surface: None,
+            category: None,
         }
     }
 

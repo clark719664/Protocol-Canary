@@ -1,5 +1,6 @@
 //! Typed request/response shapes for the small subset of Stellar RPC this
-//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, and `simulateTransaction`.
+//! crate calls: `getNetwork`, `getLatestLedger`, `getHealth`, `getVersionInfo`,
+//! and `simulateTransaction`.
 //!
 //! These mirror the documented Stellar RPC JSON-RPC methods; XDR-bearing
 //! fields stay as base64 strings here; the Soroban runner decodes them
@@ -7,6 +8,38 @@
 //! that.
 
 use serde::{Deserialize, Serialize};
+
+/// The result of `getVersionInfo`.
+///
+/// Reference: <https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getVersionInfo>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInfoResponse {
+    #[serde(rename = "version", alias = "appVersion", alias = "app_version")]
+    pub app_version: String,
+    #[serde(alias = "commit_hash")]
+    pub commit_hash: String,
+    #[serde(default, alias = "build_timestamp")]
+    pub build_timestamp: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "captive_core_version"
+    )]
+    pub captive_core_version: Option<String>,
+    #[serde(alias = "protocol_version")]
+    pub protocol_version: u32,
+}
+
+impl VersionInfoResponse {
+    /// Returns the observed Stellar Core protocol version reported by `getVersionInfo`.
+    pub fn observed_protocol(&self) -> u32 {
+        self.protocol_version
+    }
+}
+
+/// Type alias for [`VersionInfoResponse`].
+pub type GetVersionInfoResponse = VersionInfoResponse;
 
 /// The result of `getHealth`.
 ///

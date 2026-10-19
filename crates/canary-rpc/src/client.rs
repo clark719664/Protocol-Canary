@@ -20,6 +20,7 @@ use canary_core::CanaryError;
 
 use crate::models::{
     GetHealthResponse, LatestLedger, NetworkInfo, SimulationRequest, SimulationResponse,
+    VersionInfoResponse,
 };
 
 /// Errors returned by the Stellar RPC client.
@@ -232,6 +233,10 @@ pub trait RpcClient {
         &self,
     ) -> impl std::future::Future<Output = Result<GetHealthResponse, RpcError>> + Send;
 
+    fn get_version_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<VersionInfoResponse, RpcError>> + Send;
+
     /// `getNetwork`'s JSON `result` object exactly as the endpoint returned
     /// it, including every field [`NetworkInfo`] does not model.
     ///
@@ -252,6 +257,12 @@ pub trait RpcClient {
     /// `getHealth`'s JSON `result` object exactly as the endpoint
     /// returned it. See [`RpcClient::get_network_raw`].
     fn get_health_raw(
+        &self,
+    ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
+
+    /// `getVersionInfo`'s JSON `result` object exactly as the endpoint
+    /// returned it. See [`RpcClient::get_network_raw`].
+    fn get_version_info_raw(
         &self,
     ) -> impl std::future::Future<Output = Result<serde_json::Value, RpcError>> + Send;
 
@@ -822,6 +833,10 @@ impl RpcClient for HttpRpcClient {
         self.call("getHealth", json!({})).await
     }
 
+    async fn get_version_info(&self) -> Result<VersionInfoResponse, RpcError> {
+        self.call("getVersionInfo", json!({})).await
+    }
+
     async fn get_network_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getNetwork", json!({})).await
     }
@@ -832,6 +847,10 @@ impl RpcClient for HttpRpcClient {
 
     async fn get_health_raw(&self) -> Result<serde_json::Value, RpcError> {
         self.call_object("getHealth", json!({})).await
+    }
+
+    async fn get_version_info_raw(&self) -> Result<serde_json::Value, RpcError> {
+        self.call_object("getVersionInfo", json!({})).await
     }
 
     async fn simulate_transaction(
